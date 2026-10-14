@@ -88,6 +88,11 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
+
+		-- Chats whose incoming media is downloaded as soon as it arrives
+		CREATE TABLE IF NOT EXISTS auto_download_chats (
+			jid TEXT PRIMARY KEY
+		);
 	`)
 	if err != nil {
 		db.Close()
@@ -612,6 +617,12 @@ func mergeChat(store *MessageStore, from, to string) error {
 	if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", from); err != nil {
 		return err
 	}
+	if _, err := tx.Exec("INSERT OR IGNORE INTO auto_download_chats (jid) SELECT ? FROM auto_download_chats WHERE jid = ?", to, from); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM auto_download_chats WHERE jid = ?", from); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -675,6 +686,15 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		} else if content != "" {
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
 		}
+
+		// Fetch media now for chats that asked for it, before WhatsApp's URL expires
+		if mediaType != "" && messageStore.AutoDownloadEnabled(chatJID) {
+			go func() {
+				if _, _, _, _, err := downloadMedia(client, messageStore, msg.Info.ID, chatJID); err != nil {
+					logger.Warnf("Auto-download of %s in %s failed: %v", msg.Info.ID, chatJID, err)
+				}
+			}()
+		}
 	}
 }
 
@@ -699,6 +719,13 @@ func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fil
 		url, mediaKey, fileSHA256, fileEncSHA256, fileLength, id, chatJID,
 	)
 	return err
+}
+
+// AutoDownloadEnabled reports whether media arriving in a chat should be downloaded right away
+func (store *MessageStore) AutoDownloadEnabled(chatJID string) bool {
+	var found int
+	err := store.db.QueryRow("SELECT 1 FROM auto_download_chats WHERE jid = ?", chatJID).Scan(&found)
+	return err == nil
 }
 
 // SetLocalPath records where a message's media was saved on disk

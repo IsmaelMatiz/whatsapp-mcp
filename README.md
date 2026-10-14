@@ -139,7 +139,10 @@ Claude can access the following tools to interact with WhatsApp:
 - **send_message**: Send a WhatsApp message to a specified phone number or group JID
 - **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
 - **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)
-- **download_media**: Download media from a WhatsApp message and get the local file path
+- **download_media**: Download media from a WhatsApp message and get the local file path (images are also returned so the AI can see them)
+- **transcribe_audio**: Transcribe an audio message to text locally with Whisper
+- **set_auto_download**: Turn automatic media download on or off for a chat
+- **list_auto_download_chats**: List the chats with automatic media download
 
 ### Media Handling Features
 
@@ -157,7 +160,19 @@ You can send various media types to your WhatsApp contacts:
 
 #### Media Downloading
 
-By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the meda), this downloads the media and then returns the file path which can be then opened or passed to another tool.
+By default, just the metadata of the media is stored in the local database. Each media message says whether its file is already downloaded (with its local path), can be fetched, or cannot be downloaded because WhatsApp did not send the data needed. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the media), this downloads the media and then returns the file path which can be then opened or passed to another tool. For images, the picture itself is also returned (scaled down to 1568 px) so the AI can see it.
+
+Files are saved in `whatsapp-bridge/store/<chat JID>/`, named after the message ID (`<message ID>.<ext>`, or `<message ID>_<original name>` for documents).
+
+WhatsApp's download links expire after a few weeks. To keep the media of important chats, turn on automatic download with `set_auto_download`: the bridge then downloads new media in those chats as soon as it arrives.
+
+#### Audio Transcription
+
+The `transcribe_audio` tool transcribes voice notes locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so audio never leaves your computer. The text is saved in the database and shown by `list_messages` next to the audio. The first use downloads the model (about 460 MB for the default `small`). It can be configured with environment variables in the MCP server config:
+
+- `WHISPER_MODEL`: model size (`base` is faster, `small` is the default, `medium` is more accurate)
+- `WHISPER_DEVICE`: `cpu` (default), `cuda` or `auto`
+- `WHISPER_COMPUTE_TYPE`: quantization, `int8` by default
 
 ## Technical Details
 

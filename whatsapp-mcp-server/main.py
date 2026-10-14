@@ -14,7 +14,9 @@ from whatsapp import (
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
     image_preview,
-    transcribe_audio as whatsapp_transcribe_audio
+    transcribe_audio as whatsapp_transcribe_audio,
+    set_auto_download as whatsapp_set_auto_download,
+    list_auto_download_chats as whatsapp_list_auto_download_chats
 )
 
 # Downloaded files with these extensions are returned as images by download_media
@@ -286,6 +288,29 @@ def transcribe_audio(message_id: str, chat_jid: str, language: Optional[str] = N
     if text is None:
         return {"success": False, "message": status_message}
     return {"success": True, "message": status_message, "transcription": text}
+
+@mcp.tool()
+def set_auto_download(chat_jid: str, enabled: bool = True) -> Dict[str, Any]:
+    """Turn automatic media download on or off for a WhatsApp chat.
+    
+    When on, the bridge downloads images, videos, audios and documents arriving in the chat
+    right away, instead of waiting for download_media. This keeps them available after
+    WhatsApp's download links expire (a few weeks). Only affects media received from now on.
+    
+    Args:
+        chat_jid: The JID of the chat (e.g. "123456789@s.whatsapp.net" or a group JID "123456789@g.us")
+        enabled: True to turn automatic download on, False to turn it off (default True)
+    
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_set_auto_download(chat_jid, enabled)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def list_auto_download_chats() -> List[Dict[str, Any]]:
+    """List the WhatsApp chats whose incoming media is downloaded automatically."""
+    return whatsapp_list_auto_download_chats()
 
 if __name__ == "__main__":
     # Initialize and run the server

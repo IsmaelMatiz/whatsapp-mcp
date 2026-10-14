@@ -868,3 +868,41 @@ def transcribe_audio(message_id: str, chat_jid: str, language: Optional[str] = N
     finally:
         conn.close()
     return text, f"Transcribed audio (language: {language_found})"
+
+
+AUTO_DOWNLOAD_TABLE = "CREATE TABLE IF NOT EXISTS auto_download_chats (jid TEXT PRIMARY KEY)"
+
+def set_auto_download(chat_jid: str, enabled: bool) -> Tuple[bool, str]:
+    """Turn automatic media download on or off for a chat."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        if not conn.execute("SELECT 1 FROM chats WHERE jid = ?", (chat_jid,)).fetchone():
+            return False, f"Chat {chat_jid} not found"
+        conn.execute(AUTO_DOWNLOAD_TABLE)
+        if enabled:
+            conn.execute("INSERT OR IGNORE INTO auto_download_chats (jid) VALUES (?)", (chat_jid,))
+        else:
+            conn.execute("DELETE FROM auto_download_chats WHERE jid = ?", (chat_jid,))
+        conn.commit()
+    finally:
+        conn.close()
+    state = "enabled" if enabled else "disabled"
+    return True, f"Automatic media download {state} for {chat_jid}"
+
+def list_auto_download_chats() -> List[Chat]:
+    """Chats whose incoming media is downloaded automatically."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        conn.execute(AUTO_DOWNLOAD_TABLE)
+        rows = conn.execute("""
+            SELECT a.jid, c.name, c.last_message_time
+            FROM auto_download_chats a
+            LEFT JOIN chats c ON c.jid = a.jid
+            ORDER BY c.name
+        """).fetchall()
+    finally:
+        conn.close()
+    return [
+        Chat(jid=jid, name=name, last_message_time=datetime.fromisoformat(last) if last else None)
+        for jid, name, last in rows
+    ]
