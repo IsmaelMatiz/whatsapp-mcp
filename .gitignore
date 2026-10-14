@@ -3,3 +3,8 @@ claude_desktop_config.json
 whatsapp.log
 # Datos locales del bridge: mensajes, sesión y media descargada
 whatsapp-bridge/store/
+
+# Bridge compilado o descargado por el instalador
+whatsapp-bridge/whatsapp-bridge
+whatsapp-bridge/whatsapp-bridge.exe
+whatsapp-bridge/*.part

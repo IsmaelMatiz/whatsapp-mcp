@@ -34,23 +34,36 @@ It uses the WhatsApp Web multidevice API through [whatsmeow](https://github.com/
 
 ## Installation
 
-**Prerequisites:** Go, Python 3.11+, [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and, optionally, FFmpeg to convert audio to voice messages.
+### Quick install (Windows, Linux, macOS)
 
-1. **Clone the repository**
+1. Download the repository: **Code > Download ZIP** on GitHub, and unzip it. Or clone it:
 
    ```bash
    git clone https://github.com/IsmaelMatiz/whatsapp-mcp.git
-   cd whatsapp-mcp
    ```
 
-2. **Start the WhatsApp bridge** and scan the QR code with your phone (WhatsApp > Linked devices). You may need to scan it again after about 20 days.
+2. Run the installer:
+   - **Windows:** double-click `setup.bat`.
+   - **Linux / macOS:** run `./setup.sh` in a terminal.
+
+3. Scan the QR code with your phone (WhatsApp > Linked devices > Link a device).
+
+4. Quit Claude Desktop completely and open it again.
+
+The installer sets up [uv](https://docs.astral.sh/uv/) and Python, downloads the prebuilt bridge, offers to install FFmpeg, downloads the transcription model, adds the server to Claude Desktop (and Claude Code if installed), and starts the bridge at login. It asks before each optional step. Run it again to update, or when WhatsApp logs the session out (every few weeks).
+
+### Manual install
+
+**Prerequisites:** Go, Python 3.11+, [uv](https://docs.astral.sh/uv/) and, optionally, FFmpeg (lets the AI see images and send voice messages).
+
+1. **Start the bridge** and scan the QR code. It must stay running.
 
    ```bash
    cd whatsapp-bridge
-   go run main.go
+   go run .
    ```
 
-3. **Add the server to your client.** Replace the paths (`which uv` gives the first one):
+2. **Add the server to your client.** Replace the paths (`which uv` gives the first one):
 
    ```json
    {
@@ -66,13 +79,21 @@ It uses the WhatsApp Web multidevice API through [whatsmeow](https://github.com/
    - Claude Desktop: `claude_desktop_config.json` in its configuration folder.
    - Cursor: `~/.cursor/mcp.json`.
 
-4. **Restart the client.** WhatsApp shows up as an available integration. The bridge must stay running.
+3. **Restart the client.** WhatsApp shows up as an available integration.
 
-**Windows:** `go-sqlite3` needs CGO. Install a C compiler (for example with [MSYS2](https://www.msys2.org/)) and run `go env -w CGO_ENABLED=1` before `go run main.go`.
+### Publishing a release
+
+The installer downloads the bridge from the latest GitHub release. Pushing a tag builds it for every platform (`.github/workflows/release.yml`):
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+Without a release, the installer compiles the bridge if Go is installed.
 
 ## Configuration
 
-Transcription is set with environment variables (`env` in the client config). The model is downloaded on first use.
+Transcription is set with environment variables (`env` in the client config). The model is downloaded by the installer or on first use.
 
 | Variable | Default | Options |
 | --- | --- | --- |
@@ -89,6 +110,7 @@ Media is saved in `whatsapp-bridge/store/<chat JID>/`, named after the message I
 
 ## Troubleshooting
 
+- **Is the bridge running?** It runs in the background after the quick install: `whatsapp-bridge.exe` in the Task Manager on Windows, `systemctl --user status whatsapp-bridge` on Linux. Run the installer again to restart it.
 - **No QR code:** restart the bridge and check that your terminal can display it. If a session is active, it reconnects without one.
 - **Device limit reached:** remove a linked device from WhatsApp on your phone.
 - **No messages yet:** the first history sync can take several minutes.

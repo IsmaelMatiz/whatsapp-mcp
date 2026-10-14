@@ -1,0 +1,42 @@
+# Builds the bridge for every platform and attaches the binaries to a GitHub
+# release, so the installer can download them instead of compiling with Go.
+# Run it by pushing a tag: git tag v1.0.0 && git push origin v1.0.0
+name: Release bridge
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+          cache-dependency-path: whatsapp-bridge/go.sum
+
+      - name: Build
+        working-directory: whatsapp-bridge
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            ext=""
+            [ "$os" = windows ] && ext=".exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" \
+              -o "dist/whatsapp-bridge-$os-$arch$ext" .
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" whatsapp-bridge/dist/* --generate-notes

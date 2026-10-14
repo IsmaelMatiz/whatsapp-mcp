@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"github.com/mdp/qrterminal"
 
 	"bytes"
@@ -42,6 +42,12 @@ type Message struct {
 	Filename  string
 }
 
+// sqliteParams configures the pure-Go SQLite driver (no CGO, so the bridge
+// cross-compiles for Windows). It keeps the behavior of the previous driver:
+// foreign keys on, a 5 s busy timeout and timestamps stored as
+// "2006-01-02 15:04:05-07:00", the format the Python server parses.
+const sqliteParams = "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_time_format=sqlite"
+
 // Database handler for storing message history
 type MessageStore struct {
 	db *sql.DB
@@ -55,7 +61,7 @@ func NewMessageStore() (*MessageStore, error) {
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	db, err := sql.Open("sqlite", "file:store/messages.db?"+sqliteParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -1107,7 +1113,7 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:store/whatsapp.db?"+sqliteParams, dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
@@ -1196,11 +1202,15 @@ func main() {
 			return
 		}
 	} else {
-		// Already logged in, just connect
-		err = client.Connect()
-		if err != nil {
-			logger.Errorf("Failed to connect: %v", err)
-			return
+		// Already logged in, just connect. When started at login the network
+		// may not be up yet, so keep retrying instead of exiting.
+		for {
+			err = client.Connect()
+			if err == nil {
+				break
+			}
+			logger.Warnf("Failed to connect: %v (retrying in 30 s)", err)
+			time.Sleep(30 * time.Second)
 		}
 		connected <- true
 	}
@@ -1213,7 +1223,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
+	fmt.Println("\n✓ Connected to WhatsApp!")
 
 	// Start REST API server
 	startRESTServer(client, messageStore, 8080)
