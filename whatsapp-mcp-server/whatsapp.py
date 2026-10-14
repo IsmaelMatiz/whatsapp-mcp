@@ -23,18 +23,35 @@ class Message:
     media_type: Optional[str] = None
     local_path: Optional[str] = None
     downloadable: bool = False
+    transcription: Optional[str] = None
+
+def ensure_transcription_column() -> None:
+    """Add messages.transcription if the bridge that created the database predates it."""
+    try:
+        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        try:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(messages)")]
+            if columns and "transcription" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN transcription TEXT")
+                conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass  # No database yet; the bridge creates it with the column
+
+ensure_transcription_column()
 
 def media_columns(alias: str) -> str:
-    """Extra SELECT columns for media status: local path, and whether the bridge has
-    everything it needs to download the file. Read back with media_fields()."""
-    return f""", {alias}.local_path,
+    """Extra SELECT columns for media status: transcription, local path, and whether the
+    bridge has everything it needs to download the file. Read back with media_fields()."""
+    return f""", {alias}.transcription, {alias}.local_path,
         ({alias}.url IS NOT NULL AND {alias}.url != ''
          AND length({alias}.media_key) > 0 AND length({alias}.file_sha256) > 0
          AND length({alias}.file_enc_sha256) > 0 AND {alias}.file_length > 0)"""
 
 def media_fields(row) -> dict:
-    """Message kwargs for the two columns added by media_columns(), which come last."""
-    return {"local_path": row[-2], "downloadable": bool(row[-1])}
+    """Message kwargs for the columns added by media_columns(), which come last."""
+    return {"transcription": row[-3], "local_path": row[-2], "downloadable": bool(row[-1])}
 
 @dataclass
 class Chat:
@@ -124,6 +141,11 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         else:
             status = "cannot be downloaded, WhatsApp did not send the data needed to fetch it"
         content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid} - {status}] "
+        if message.media_type == "audio":
+            if message.transcription:
+                content_prefix += f'Transcription: "{message.transcription}" '
+            elif message.downloadable or message.local_path:
+                content_prefix += "(call transcribe_audio to get the text) "
     
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
@@ -802,3 +824,47 @@ def image_preview(path: str) -> Optional[bytes]:
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout or None
+
+
+def transcribe_audio(message_id: str, chat_jid: str, language: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """Transcribe an audio message, reusing the saved transcription when there is one.
+
+    Returns:
+        A tuple of (transcription or None on failure, status message)
+    """
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT media_type, transcription FROM messages WHERE id = ? AND chat_jid = ?",
+            (message_id, chat_jid),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None, f"Message {message_id} not found in chat {chat_jid}"
+    if row[0] != "audio":
+        return None, f"Message {message_id} is not an audio message (media type: {row[0] or 'none'})"
+    if row[1]:
+        return row[1], "Transcription loaded from the database"
+
+    path, status = download_media(message_id, chat_jid)
+    if not path:
+        return None, status
+
+    import transcription  # deferred: loading faster-whisper is slow and only needed here
+    try:
+        text, language_found = transcription.transcribe_file(path, language)
+    except Exception as e:
+        return None, f"Transcription failed: {str(e)}"
+
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        conn.execute(
+            "UPDATE messages SET transcription = ? WHERE id = ? AND chat_jid = ?",
+            (text, message_id, chat_jid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return text, f"Transcribed audio (language: {language_found})"

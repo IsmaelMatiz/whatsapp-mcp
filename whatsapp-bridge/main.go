@@ -84,6 +84,7 @@ func NewMessageStore() (*MessageStore, error) {
 			file_length INTEGER,
 			direct_path TEXT,
 			local_path TEXT,
+			transcription TEXT,
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
@@ -94,7 +95,7 @@ func NewMessageStore() (*MessageStore, error) {
 	}
 
 	// Columns added after the original schema; existing databases get them here
-	for _, column := range []string{"direct_path", "local_path"} {
+	for _, column := range []string{"direct_path", "local_path", "transcription"} {
 		if err := addColumnIfMissing(db, "messages", column, "TEXT"); err != nil {
 			db.Close()
 			return nil, err
@@ -150,7 +151,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		return nil
 	}
 
-	// Upsert instead of INSERT OR REPLACE so columns filled later (local_path) survive a re-sync
+	// Upsert instead of INSERT OR REPLACE so columns filled later (local_path, transcription) survive a re-sync
 	_, err := store.db.Exec(
 		`INSERT INTO messages 
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length) 
@@ -600,8 +601,8 @@ func mergeChat(store *MessageStore, from, to string) error {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, media_key, file_sha256, file_enc_sha256, file_length)
-		SELECT id, ?, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, media_key, file_sha256, file_enc_sha256, file_length
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, transcription, media_key, file_sha256, file_enc_sha256, file_length)
+		SELECT id, ?, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, transcription, media_key, file_sha256, file_enc_sha256, file_length
 		FROM messages WHERE chat_jid = ?`, to, from); err != nil {
 		return err
 	}

@@ -13,7 +13,8 @@ from whatsapp import (
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
-    image_preview
+    image_preview,
+    transcribe_audio as whatsapp_transcribe_audio
 )
 
 # Downloaded files with these extensions are returned as images by download_media
@@ -264,6 +265,27 @@ def download_media(message_id: str, chat_jid: str, show_image: bool = True) -> A
             "success": False,
             "message": status_message
         }
+
+@mcp.tool()
+def transcribe_audio(message_id: str, chat_jid: str, language: Optional[str] = None) -> Dict[str, Any]:
+    """Transcribe a WhatsApp audio (voice note) message to text, locally with Whisper.
+    
+    The transcription is saved, so later calls and list_messages return it without
+    transcribing again. The first call can take a while because the model has to load
+    (and is downloaded the very first time).
+    
+    Args:
+        message_id: The ID of the audio message
+        chat_jid: The JID of the chat containing the message
+        language: Optional ISO 639-1 language code such as "es" or "en"; detected automatically if omitted
+    
+    Returns:
+        A dictionary containing success status, a status message, and the transcription if successful
+    """
+    text, status_message = whatsapp_transcribe_audio(message_id, chat_jid, language)
+    if text is None:
+        return {"success": False, "message": status_message}
+    return {"success": True, "message": status_message, "transcription": text}
 
 if __name__ == "__main__":
     # Initialize and run the server
