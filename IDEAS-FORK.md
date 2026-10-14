@@ -20,16 +20,6 @@ ffmpeg ya está instalado (Whisper lo necesita para decodificar).
 
 **Idea:** que `download_media` (o una herramienta nueva `get_image`) devuelva la imagen como contenido de imagen MCP (`Image` de FastMCP), además de la ruta local.
 
-## 3. Hacer más evidente que la media se descarga bajo demanda
-
-**Problema:** el bridge solo guarda la metadata (URL cifrada, claves, tamaño). Nada se descarga solo, y la IA no siempre entiende que tiene que llamar a `download_media`.
-
-**Ideas:**
-
-- Que `list_messages` diga explícitamente "usa `download_media` con este ID para obtener el archivo".
-- Mostrar si el archivo ya está descargado y su ruta local.
-- Indicar cuándo un mensaje **no** se puede descargar por falta de datos (hay ~90 imágenes y ~13 videos así, probablemente del historial sincronizado).
-
 ## 4. Descarga automática por chat (opcional)
 
 Opción de configuración para descargar automáticamente la media de ciertos chats (p. ej. familia) en cuanto llega, para no depender de que la URL siga viva (las URLs de WhatsApp caducan a las pocas semanas).
@@ -39,3 +29,4 @@ Opción de configuración para descargar automáticamente la media de ciertos ch
 - **Arreglo del 403 al descargar media** (`whatsapp-bridge/main.go`, `extractDirectPathFromURL`): se le quitaba el query string (`?ccb=…&oh=…&oe=…`, la firma) al direct path. La versión nueva de whatsmeow arma la URL con `directPath + "&hash=…"`, así que sin la firma el CDN devolvía 403.
 - **Direct path guardado en la BD**: columna `messages.direct_path` con el `GetDirectPath()` del mensaje. Los mensajes viejos sin ese dato siguen usando `extractDirectPathFromURL` como respaldo.
 - **Nombres de archivo estables**: la media se guarda como `<ID del mensaje>.<ext>` (extensión según el mimetype), y los documentos como `<ID>_<nombre original>`, con el nombre limpiado para que no pueda salirse de la carpeta del chat. Los archivos viejos con nombre por fecha se renombran solos la próxima vez que se piden.
+- **Estado de la media en `list_messages`**: cada mensaje con media dice si ya está descargado (con su ruta), si se puede pedir con `download_media` o si no se puede descargar por falta de datos. El bridge guarda la ruta en `messages.local_path` y ahora usa un upsert para no perder columnas al resincronizar. `download_media` devuelve el motivo real cuando falla.

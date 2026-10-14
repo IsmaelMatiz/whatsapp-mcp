@@ -83,6 +83,7 @@ func NewMessageStore() (*MessageStore, error) {
 			file_enc_sha256 BLOB,
 			file_length INTEGER,
 			direct_path TEXT,
+			local_path TEXT,
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
@@ -93,9 +94,11 @@ func NewMessageStore() (*MessageStore, error) {
 	}
 
 	// Columns added after the original schema; existing databases get them here
-	if err := addColumnIfMissing(db, "messages", "direct_path", "TEXT"); err != nil {
-		db.Close()
-		return nil, err
+	for _, column := range []string{"direct_path", "local_path"} {
+		if err := addColumnIfMissing(db, "messages", column, "TEXT"); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 
 	return &MessageStore{db: db}, nil
@@ -147,10 +150,16 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		return nil
 	}
 
+	// Upsert instead of INSERT OR REPLACE so columns filled later (local_path) survive a re-sync
 	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages 
+		`INSERT INTO messages 
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id, chat_jid) DO UPDATE SET
+			sender = excluded.sender, content = excluded.content, timestamp = excluded.timestamp,
+			is_from_me = excluded.is_from_me, media_type = excluded.media_type, filename = excluded.filename,
+			url = excluded.url, direct_path = excluded.direct_path, media_key = excluded.media_key,
+			file_sha256 = excluded.file_sha256, file_enc_sha256 = excluded.file_enc_sha256, file_length = excluded.file_length`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
@@ -591,8 +600,8 @@ func mergeChat(store *MessageStore, from, to string) error {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		SELECT id, ?, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, media_key, file_sha256, file_enc_sha256, file_length)
+		SELECT id, ?, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, local_path, media_key, file_sha256, file_enc_sha256, file_length
 		FROM messages WHERE chat_jid = ?`, to, from); err != nil {
 		return err
 	}
@@ -688,6 +697,12 @@ func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fil
 		"UPDATE messages SET url = ?, media_key = ?, file_sha256 = ?, file_enc_sha256 = ?, file_length = ? WHERE id = ? AND chat_jid = ?",
 		url, mediaKey, fileSHA256, fileEncSHA256, fileLength, id, chatJID,
 	)
+	return err
+}
+
+// SetLocalPath records where a message's media was saved on disk
+func (store *MessageStore) SetLocalPath(id, chatJID, path string) error {
+	_, err := store.db.Exec("UPDATE messages SET local_path = ? WHERE id = ? AND chat_jid = ?", path, id, chatJID)
 	return err
 }
 
@@ -814,6 +829,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Check if file already exists
 	if _, err := os.Stat(localPath); err == nil {
 		// File exists, return it
+		if err := messageStore.SetLocalPath(messageID, chatJID, absPath); err != nil {
+			fmt.Printf("Failed to record local path of %s: %v\n", messageID, err)
+		}
 		return true, mediaType, filename, absPath, nil
 	}
 
@@ -863,6 +881,10 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Save the downloaded media to file
 	if err := os.WriteFile(localPath, mediaData, 0644); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
+	}
+
+	if err := messageStore.SetLocalPath(messageID, chatJID, absPath); err != nil {
+		fmt.Printf("Failed to record local path of %s: %v\n", messageID, err)
 	}
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))

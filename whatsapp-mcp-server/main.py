@@ -43,6 +43,10 @@ def list_messages(
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp messages matching specified criteria with optional context.
     
+    Media files are not stored automatically, only the data needed to fetch them. Each media
+    message says whether its file is already downloaded (with its local path), can be fetched
+    with download_media, or cannot be downloaded at all.
+    
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
@@ -223,7 +227,9 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
-    """Download media from a WhatsApp message and get the local file path.
+    """Download media (image, video, audio, document) from a WhatsApp message and get the local file path.
+    
+    Media is only downloaded on demand. Calling this again for an already downloaded file is cheap.
     
     Args:
         message_id: The ID of the message containing the media
@@ -232,18 +238,18 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     Returns:
         A dictionary containing success status, a status message, and the file path if successful
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
+    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
     
     if file_path:
         return {
             "success": True,
-            "message": "Media downloaded successfully",
+            "message": status_message,
             "file_path": file_path
         }
     else:
         return {
             "success": False,
-            "message": "Failed to download media"
+            "message": status_message
         }
 
 if __name__ == "__main__":

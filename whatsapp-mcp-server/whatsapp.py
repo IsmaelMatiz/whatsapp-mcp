@@ -20,6 +20,20 @@ class Message:
     id: str
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
+    local_path: Optional[str] = None
+    downloadable: bool = False
+
+def media_columns(alias: str) -> str:
+    """Extra SELECT columns for media status: local path, and whether the bridge has
+    everything it needs to download the file. Read back with media_fields()."""
+    return f""", {alias}.local_path,
+        ({alias}.url IS NOT NULL AND {alias}.url != ''
+         AND length({alias}.media_key) > 0 AND length({alias}.file_sha256) > 0
+         AND length({alias}.file_enc_sha256) > 0 AND {alias}.file_length > 0)"""
+
+def media_fields(row) -> dict:
+    """Message kwargs for the two columns added by media_columns(), which come last."""
+    return {"local_path": row[-2], "downloadable": bool(row[-1])}
 
 @dataclass
 class Chat:
@@ -102,7 +116,13 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         
     content_prefix = ""
     if hasattr(message, 'media_type') and message.media_type:
-        content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
+        if message.local_path and os.path.exists(message.local_path):
+            status = f"downloaded at {message.local_path}"
+        elif message.downloadable:
+            status = "not downloaded yet, call download_media with this message ID and chat JID to get the file"
+        else:
+            status = "cannot be downloaded, WhatsApp did not send the data needed to fetch it"
+        content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid} - {status}] "
     
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
@@ -139,7 +159,7 @@ def list_messages(
         cursor = conn.cursor()
         
         # Build base query
-        query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
+        query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type" + media_columns("messages") + " FROM messages"]
         query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
         where_clauses = []
         params = []
@@ -197,7 +217,8 @@ def list_messages(
                 is_from_me=msg[4],
                 chat_jid=msg[5],
                 id=msg[6],
-                media_type=msg[7]
+                media_type=msg[7],
+                **media_fields(msg)
             )
             result.append(message)
             
@@ -234,8 +255,8 @@ def get_message_context(
         cursor = conn.cursor()
         
         # Get the target message first
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
+        cursor.execute(f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type{media_columns("messages")}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.id = ?
@@ -253,12 +274,13 @@ def get_message_context(
             is_from_me=msg_data[4],
             chat_jid=msg_data[5],
             id=msg_data[6],
-            media_type=msg_data[8]
+            media_type=msg_data[8],
+            **media_fields(msg_data)
         )
         
         # Get messages before
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
+        cursor.execute(f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type{media_columns("messages")}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND messages.timestamp < ?
@@ -276,12 +298,13 @@ def get_message_context(
                 is_from_me=msg[4],
                 chat_jid=msg[5],
                 id=msg[6],
-                media_type=msg[7]
+                media_type=msg[7],
+                **media_fields(msg)
             ))
         
         # Get messages after
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
+        cursor.execute(f"""
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type{media_columns("messages")}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND messages.timestamp > ?
@@ -299,7 +322,8 @@ def get_message_context(
                 is_from_me=msg[4],
                 chat_jid=msg[5],
                 id=msg[6],
-                media_type=msg[7]
+                media_type=msg[7],
+                **media_fields(msg)
             ))
         
         return MessageContext(
@@ -489,7 +513,7 @@ def get_last_interaction(jid: str) -> str:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
         
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 m.timestamp,
                 m.sender,
@@ -499,6 +523,7 @@ def get_last_interaction(jid: str) -> str:
                 c.jid,
                 m.id,
                 m.media_type
+                {media_columns("m")}
             FROM messages m
             JOIN chats c ON m.chat_jid = c.jid
             WHERE m.sender = ? OR c.jid = ?
@@ -519,7 +544,8 @@ def get_last_interaction(jid: str) -> str:
             is_from_me=msg_data[4],
             chat_jid=msg_data[5],
             id=msg_data[6],
-            media_type=msg_data[7]
+            media_type=msg_data[7],
+            **media_fields(msg_data)
         )
         
         return format_message(message)
@@ -724,15 +750,15 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def download_media(message_id: str, chat_jid: str) -> Optional[str]:
-    """Download media from a message and return the local file path.
+def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
+    """Download media from a message.
     
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
     
     Returns:
-        The local file path if download was successful, None otherwise
+        A tuple of (local file path or None on failure, status message from the bridge)
     """
     try:
         url = f"{WHATSAPP_API_BASE_URL}/download"
@@ -743,25 +769,16 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         
         response = requests.post(url, json=payload)
         
-        if response.status_code == 200:
+        try:
             result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
-                return path
-            else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
-                return None
-        else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            return None
+        except json.JSONDecodeError:
+            return None, f"Error: HTTP {response.status_code} - {response.text}"
+        
+        if response.status_code == 200 and result.get("success", False):
+            return result.get("path"), result.get("message", "Media downloaded successfully")
+        return None, result.get("message", f"Error: HTTP {response.status_code}")
             
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
-        return None
-    except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
-        return None
+        return None, f"Request error: {str(e)} (is the WhatsApp bridge running?)"
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        return None
+        return None, f"Unexpected error: {str(e)}"
