@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -402,37 +403,94 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
 
+// mediaExtensions maps the mimetypes WhatsApp commonly uses to file extensions
+var mediaExtensions = map[string]string{
+	"image/jpeg":      "jpg",
+	"image/png":       "png",
+	"image/webp":      "webp",
+	"image/gif":       "gif",
+	"video/mp4":       "mp4",
+	"video/3gpp":      "3gp",
+	"video/quicktime": "mov",
+	"audio/ogg":       "ogg",
+	"audio/mpeg":      "mp3",
+	"audio/mp4":       "m4a",
+	"audio/aac":       "aac",
+	"application/pdf": "pdf",
+}
+
+// extensionForMime returns the file extension for a mimetype, or fallback if unknown.
+func extensionForMime(mimetype, fallback string) string {
+	base := strings.TrimSpace(strings.SplitN(mimetype, ";", 2)[0])
+	if ext, ok := mediaExtensions[base]; ok {
+		return ext
+	}
+	return fallback
+}
+
+// sanitizeFilename keeps a name safe to use inside a chat folder: no directories, no separators.
+func sanitizeFilename(name string) string {
+	name = strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
+	name = strings.TrimLeft(strings.TrimSpace(name), ".")
+	if runes := []rune(name); len(runes) > 150 {
+		name = string(runes[len(runes)-150:]) // keep the end, where the extension is
+	}
+	return name
+}
+
+// mediaFilename builds the stored name of a media file from its message ID, so the file
+// can always be traced back to its message and two files never collide.
+func mediaFilename(messageID, ext, originalName string) string {
+	id := sanitizeFilename(messageID)
+	if originalName = sanitizeFilename(originalName); originalName != "" {
+		return id + "_" + originalName
+	}
+	return id + "." + ext
+}
+
+// legacyFilename matches the timestamp-based names older versions stored (image_20261007_122248.jpg).
+var legacyFilename = regexp.MustCompile(`^(image|video|audio|document)_\d{8}_\d{6}(\.\w+)?$`)
+
+// localMediaName returns the file name a message's media is saved under. Rows stored by
+// older versions have timestamp-based names, which are mapped to the message-ID scheme.
+func localMediaName(messageID, storedFilename string) string {
+	id := sanitizeFilename(messageID)
+	if strings.HasPrefix(storedFilename, id) {
+		return sanitizeFilename(storedFilename)
+	}
+	if legacyFilename.MatchString(storedFilename) {
+		return id + filepath.Ext(storedFilename)
+	}
+	return mediaFilename(messageID, "", storedFilename)
+}
+
 // Extract media info from a message
-func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
+func extractMediaInfo(messageID string, msg *waProto.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
 	if msg == nil {
 		return "", "", "", "", nil, nil, nil, 0
 	}
 
 	// Check for image message
 	if img := msg.GetImageMessage(); img != nil {
-		return "image", "image_" + time.Now().Format("20060102_150405") + ".jpg",
+		return "image", mediaFilename(messageID, extensionForMime(img.GetMimetype(), "jpg"), ""),
 			img.GetURL(), img.GetDirectPath(), img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
 	}
 
 	// Check for video message
 	if vid := msg.GetVideoMessage(); vid != nil {
-		return "video", "video_" + time.Now().Format("20060102_150405") + ".mp4",
+		return "video", mediaFilename(messageID, extensionForMime(vid.GetMimetype(), "mp4"), ""),
 			vid.GetURL(), vid.GetDirectPath(), vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
 	}
 
 	// Check for audio message
 	if aud := msg.GetAudioMessage(); aud != nil {
-		return "audio", "audio_" + time.Now().Format("20060102_150405") + ".ogg",
+		return "audio", mediaFilename(messageID, extensionForMime(aud.GetMimetype(), "ogg"), ""),
 			aud.GetURL(), aud.GetDirectPath(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
 
 	// Check for document message
 	if doc := msg.GetDocumentMessage(); doc != nil {
-		filename := doc.GetFileName()
-		if filename == "" {
-			filename = "document_" + time.Now().Format("20060102_150405")
-		}
-		return "document", filename,
+		return "document", mediaFilename(messageID, extensionForMime(doc.GetMimetype(), "bin"), doc.GetFileName()),
 			doc.GetURL(), doc.GetDirectPath(), doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
 	}
 
@@ -566,7 +624,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	content := extractTextContent(msg.Message)
 
 	// Extract media info
-	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
+	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Info.ID, msg.Message)
 
 	// Skip if there's no content and no media
 	if content == "" && mediaType == "" {
@@ -731,8 +789,21 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
-	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	// Generate a local path for the file, named after the message ID
+	legacyPath := filepath.Join(chatDir, filepath.Base(filename))
+	filename = localMediaName(messageID, filename)
+	localPath = filepath.Join(chatDir, filename)
+
+	// Files downloaded by older versions used timestamp names; move them to the new name
+	if legacyPath != localPath {
+		if _, err := os.Stat(localPath); os.IsNotExist(err) {
+			if _, err := os.Stat(legacyPath); err == nil {
+				if err := os.Rename(legacyPath, localPath); err != nil {
+					return false, "", "", "", fmt.Errorf("failed to rename %s: %v", legacyPath, err)
+				}
+			}
+		}
+	}
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -1211,7 +1282,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				var fileLength uint64
 
 				if msg.Message.Message != nil {
-					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
+					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.GetKey().GetID(), msg.Message.Message)
 				}
 
 				// Log the message content for debugging

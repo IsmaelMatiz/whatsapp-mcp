@@ -34,11 +34,8 @@ ffmpeg ya está instalado (Whisper lo necesita para decodificar).
 
 Opción de configuración para descargar automáticamente la media de ciertos chats (p. ej. familia) en cuanto llega, para no depender de que la URL siga viva (las URLs de WhatsApp caducan a las pocas semanas).
 
-## 5. Nombres de archivo estables
-
-El nombre del archivo se genera con `time.Now()` al **recibir** el mensaje (`audio_20261007_122248.ogg`), no con el ID del mensaje. Usar el ID del mensaje en el nombre evitaría choques y haría el archivo fácil de relacionar con su mensaje.
-
 ## Ya hecho
 
 - **Arreglo del 403 al descargar media** (`whatsapp-bridge/main.go`, `extractDirectPathFromURL`): se le quitaba el query string (`?ccb=…&oh=…&oe=…`, la firma) al direct path. La versión nueva de whatsmeow arma la URL con `directPath + "&hash=…"`, así que sin la firma el CDN devolvía 403.
 - **Direct path guardado en la BD**: columna `messages.direct_path` con el `GetDirectPath()` del mensaje. Los mensajes viejos sin ese dato siguen usando `extractDirectPathFromURL` como respaldo.
+- **Nombres de archivo estables**: la media se guarda como `<ID del mensaje>.<ext>` (extensión según el mimetype), y los documentos como `<ID>_<nombre original>`, con el nombre limpiado para que no pueda salirse de la carpeta del chat. Los archivos viejos con nombre por fecha se renombran solos la próxima vez que se piden.
