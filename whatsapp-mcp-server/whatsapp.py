@@ -810,20 +810,23 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
 # Longest side, in pixels, of images handed to the model; larger ones are scaled down
 IMAGE_PREVIEW_MAX_SIDE = 1568
 
-def image_preview(path: str) -> Optional[bytes]:
-    """Return a JPEG of the image at path, scaled down to IMAGE_PREVIEW_MAX_SIDE, or None
-    if ffmpeg cannot read it."""
+def image_preview(path: str, seek_seconds: float = 0) -> Optional[bytes]:
+    """Return a JPEG of the image at path (or of the frame at seek_seconds for videos and
+    GIFs), scaled down to IMAGE_PREVIEW_MAX_SIDE, or None if ffmpeg cannot read it."""
     side = IMAGE_PREVIEW_MAX_SIDE
+    seek = ["-ss", str(seek_seconds)] if seek_seconds else []
     try:
         result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", path,
+            ["ffmpeg", "-v", "error", *seek, "-i", path,
              "-vf", f"scale='min({side},iw)':'min({side},ih)':force_original_aspect_ratio=decrease",
              "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", "pipe:1"],
             capture_output=True, timeout=30, check=True,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout or None
+        result = None
+    if not (result and result.stdout) and seek_seconds:
+        return image_preview(path)  # shorter than seek_seconds: use the first frame
+    return result.stdout if result and result.stdout else None
 
 
 def transcribe_audio(message_id: str, chat_jid: str, language: Optional[str] = None) -> Tuple[Optional[str], str]:

@@ -20,7 +20,10 @@ from whatsapp import (
 )
 
 # Downloaded files with these extensions are returned as images by download_media
+# (.webp covers stickers); for videos and GIFs (MP4) a single frame is returned
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+VIDEO_EXTENSIONS = (".mp4", ".3gp", ".mov")
+VIDEO_FRAME_SECONDS = 1
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -237,16 +240,17 @@ def download_media(message_id: str, chat_jid: str, show_image: bool = True) -> A
     """Download media (image, video, audio, document) from a WhatsApp message and get the local file path.
     
     Media is only downloaded on demand. Calling this again for an already downloaded file is cheap.
-    For images, the picture itself is also returned so you can see it.
+    For images and stickers, the picture itself is also returned so you can see it; for
+    videos and GIFs, a frame from the first second is returned.
     
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
-        show_image: For images, also return the picture (scaled down) so it can be viewed (default True)
+        show_image: For images, stickers, videos and GIFs, also return a picture (scaled down) so it can be viewed (default True)
     
     Returns:
         A dictionary containing success status, a status message, and the file path if successful,
-        followed by the image itself when the media is an image and show_image is True
+        followed by the picture when show_image is True and the media is visual
     """
     file_path, status_message = whatsapp_download_media(message_id, chat_jid)
     
@@ -256,8 +260,12 @@ def download_media(message_id: str, chat_jid: str, show_image: bool = True) -> A
             "message": status_message,
             "file_path": file_path
         }
-        if show_image and file_path.lower().endswith(IMAGE_EXTENSIONS):
-            preview = image_preview(file_path)
+        lower_path = file_path.lower()
+        if show_image and lower_path.endswith(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS):
+            is_video = lower_path.endswith(VIDEO_EXTENSIONS)
+            preview = image_preview(file_path, VIDEO_FRAME_SECONDS if is_video else 0)
+            if is_video and preview:
+                result["message"] += f" (the picture is a single frame at {VIDEO_FRAME_SECONDS}s, not the whole video)"
             if preview:
                 return [result, Image(data=preview, format="jpeg")]
             result["message"] += " (could not render the image preview)"

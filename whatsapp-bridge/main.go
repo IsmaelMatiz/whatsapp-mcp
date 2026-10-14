@@ -232,8 +232,45 @@ func extractTextContent(msg *waProto.Message) string {
 		return extendedText.GetText()
 	}
 
-	// For now, we're ignoring non-text messages
+	// Text written under a photo, video, GIF or document. Stickers can't carry one.
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	} else if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetCaption()
+	} else if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
+	}
+
 	return ""
+}
+
+// unwrapMessage returns the actual content of messages WhatsApp nests inside wrappers
+// (disappearing, view-once, documents with caption...). Live events arrive already
+// unwrapped by whatsmeow; history sync messages don't.
+func unwrapMessage(msg *waProto.Message) *waProto.Message {
+	for msg != nil {
+		var inner *waProto.Message
+		switch {
+		case msg.GetDeviceSentMessage().GetMessage() != nil:
+			inner = msg.GetDeviceSentMessage().GetMessage()
+		case msg.GetEphemeralMessage().GetMessage() != nil:
+			inner = msg.GetEphemeralMessage().GetMessage()
+		case msg.GetViewOnceMessage().GetMessage() != nil:
+			inner = msg.GetViewOnceMessage().GetMessage()
+		case msg.GetViewOnceMessageV2().GetMessage() != nil:
+			inner = msg.GetViewOnceMessageV2().GetMessage()
+		case msg.GetViewOnceMessageV2Extension().GetMessage() != nil:
+			inner = msg.GetViewOnceMessageV2Extension().GetMessage()
+		case msg.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			inner = msg.GetDocumentWithCaptionMessage().GetMessage()
+		case msg.GetLottieStickerMessage().GetMessage() != nil:
+			inner = msg.GetLottieStickerMessage().GetMessage()
+		default:
+			return msg
+		}
+		msg = inner
+	}
+	return msg
 }
 
 // SendMessageResponse represents the response for the send message API
@@ -491,9 +528,13 @@ func extractMediaInfo(messageID string, msg *waProto.Message) (mediaType string,
 			img.GetURL(), img.GetDirectPath(), img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
 	}
 
-	// Check for video message
+	// Check for video message; GIFs are sent as short looping MP4 videos
 	if vid := msg.GetVideoMessage(); vid != nil {
-		return "video", mediaFilename(messageID, extensionForMime(vid.GetMimetype(), "mp4"), ""),
+		mediaType := "video"
+		if vid.GetGifPlayback() {
+			mediaType = "gif"
+		}
+		return mediaType, mediaFilename(messageID, extensionForMime(vid.GetMimetype(), "mp4"), ""),
 			vid.GetURL(), vid.GetDirectPath(), vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
 	}
 
@@ -501,6 +542,12 @@ func extractMediaInfo(messageID string, msg *waProto.Message) (mediaType string,
 	if aud := msg.GetAudioMessage(); aud != nil {
 		return "audio", mediaFilename(messageID, extensionForMime(aud.GetMimetype(), "ogg"), ""),
 			aud.GetURL(), aud.GetDirectPath(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
+	}
+
+	// Check for sticker message (WebP image, possibly animated)
+	if st := msg.GetStickerMessage(); st != nil {
+		return "sticker", mediaFilename(messageID, extensionForMime(st.GetMimetype(), "webp"), ""),
+			st.GetURL(), st.GetDirectPath(), st.GetMediaKey(), st.GetFileSHA256(), st.GetFileEncSHA256(), st.GetFileLength()
 	}
 
 	// Check for document message
@@ -878,9 +925,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Create a downloader that implements DownloadableMessage
 	var waMediaType whatsmeow.MediaType
 	switch mediaType {
-	case "image":
+	case "image", "sticker":
 		waMediaType = whatsmeow.MediaImage
-	case "video":
+	case "video", "gif":
 		waMediaType = whatsmeow.MediaVideo
 	case "audio":
 		waMediaType = whatsmeow.MediaAudio
@@ -1316,23 +1363,17 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Extract text content
-				var content string
-				if msg.Message.Message != nil {
-					if conv := msg.Message.Message.GetConversation(); conv != "" {
-						content = conv
-					} else if ext := msg.Message.Message.GetExtendedTextMessage(); ext != nil {
-						content = ext.GetText()
-					}
-				}
+				// Extract text content, including captions of media
+				inner := unwrapMessage(msg.Message.Message)
+				content := extractTextContent(inner)
 
 				// Extract media info
 				var mediaType, filename, url, directPath string
 				var mediaKey, fileSHA256, fileEncSHA256 []byte
 				var fileLength uint64
 
-				if msg.Message.Message != nil {
-					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.GetKey().GetID(), msg.Message.Message)
+				if inner != nil {
+					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.GetKey().GetID(), inner)
 				}
 
 				// Log the message content for debugging

@@ -160,7 +160,7 @@ You can send various media types to your WhatsApp contacts:
 
 #### Media Downloading
 
-By default, just the metadata of the media is stored in the local database. Each media message says whether its file is already downloaded (with its local path), can be fetched, or cannot be downloaded because WhatsApp did not send the data needed. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the media), this downloads the media and then returns the file path which can be then opened or passed to another tool. For images, the picture itself is also returned (scaled down to 1568 px) so the AI can see it.
+By default, just the metadata of the media is stored in the local database. Each media message says whether its file is already downloaded (with its local path), can be fetched, or cannot be downloaded because WhatsApp did not send the data needed. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the media), this downloads the media and then returns the file path which can be then opened or passed to another tool. For images and stickers, the picture itself is also returned (scaled down to 1568 px) so the AI can see it; for videos and GIFs, a single frame is returned. Text written under a photo, video, GIF or document is stored as the message content.
 
 Files are saved in `whatsapp-bridge/store/<chat JID>/`, named after the message ID (`<message ID>.<ext>`, or `<message ID>_<original name>` for documents).
 
