@@ -8,3 +8,6 @@ whatsapp-bridge/store/
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-bridge.exe
 whatsapp-bridge/*.part
+
+# Caché de Python
+__pycache__/
