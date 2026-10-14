@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -12,8 +12,12 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    image_preview
 )
+
+# Downloaded files with these extensions are returned as images by download_media
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -226,26 +230,35 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
+def download_media(message_id: str, chat_jid: str, show_image: bool = True) -> Any:
     """Download media (image, video, audio, document) from a WhatsApp message and get the local file path.
     
     Media is only downloaded on demand. Calling this again for an already downloaded file is cheap.
+    For images, the picture itself is also returned so you can see it.
     
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
+        show_image: For images, also return the picture (scaled down) so it can be viewed (default True)
     
     Returns:
-        A dictionary containing success status, a status message, and the file path if successful
+        A dictionary containing success status, a status message, and the file path if successful,
+        followed by the image itself when the media is an image and show_image is True
     """
     file_path, status_message = whatsapp_download_media(message_id, chat_jid)
     
     if file_path:
-        return {
+        result = {
             "success": True,
             "message": status_message,
             "file_path": file_path
         }
+        if show_image and file_path.lower().endswith(IMAGE_EXTENSIONS):
+            preview = image_preview(file_path)
+            if preview:
+                return [result, Image(data=preview, format="jpeg")]
+            result["message"] += " (could not render the image preview)"
+        return result
     else:
         return {
             "success": False,

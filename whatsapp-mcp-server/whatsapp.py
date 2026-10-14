@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 import os.path
 import requests
 import json
+import subprocess
 import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
@@ -782,3 +783,22 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
         return None, f"Request error: {str(e)} (is the WhatsApp bridge running?)"
     except Exception as e:
         return None, f"Unexpected error: {str(e)}"
+
+
+# Longest side, in pixels, of images handed to the model; larger ones are scaled down
+IMAGE_PREVIEW_MAX_SIDE = 1568
+
+def image_preview(path: str) -> Optional[bytes]:
+    """Return a JPEG of the image at path, scaled down to IMAGE_PREVIEW_MAX_SIDE, or None
+    if ffmpeg cannot read it."""
+    side = IMAGE_PREVIEW_MAX_SIDE
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path,
+             "-vf", f"scale='min({side},iw)':'min({side},ih)':force_original_aspect_ratio=decrease",
+             "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", "pipe:1"],
+            capture_output=True, timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout or None

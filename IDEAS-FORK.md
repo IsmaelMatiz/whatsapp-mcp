@@ -14,12 +14,6 @@ Features que le faltan al proyecto, para implementar después.
 
 ffmpeg ya está instalado (Whisper lo necesita para decodificar).
 
-## 2. Que la IA pueda ver las imágenes
-
-**Problema:** `download_media` solo devuelve la **ruta** del archivo, no la imagen. La IA no la ve, salvo que tenga otra herramienta para leer archivos del disco.
-
-**Idea:** que `download_media` (o una herramienta nueva `get_image`) devuelva la imagen como contenido de imagen MCP (`Image` de FastMCP), además de la ruta local.
-
 ## 4. Descarga automática por chat (opcional)
 
 Opción de configuración para descargar automáticamente la media de ciertos chats (p. ej. familia) en cuanto llega, para no depender de que la URL siga viva (las URLs de WhatsApp caducan a las pocas semanas).
@@ -30,3 +24,4 @@ Opción de configuración para descargar automáticamente la media de ciertos ch
 - **Direct path guardado en la BD**: columna `messages.direct_path` con el `GetDirectPath()` del mensaje. Los mensajes viejos sin ese dato siguen usando `extractDirectPathFromURL` como respaldo.
 - **Nombres de archivo estables**: la media se guarda como `<ID del mensaje>.<ext>` (extensión según el mimetype), y los documentos como `<ID>_<nombre original>`, con el nombre limpiado para que no pueda salirse de la carpeta del chat. Los archivos viejos con nombre por fecha se renombran solos la próxima vez que se piden.
 - **Estado de la media en `list_messages`**: cada mensaje con media dice si ya está descargado (con su ruta), si se puede pedir con `download_media` o si no se puede descargar por falta de datos. El bridge guarda la ruta en `messages.local_path` y ahora usa un upsert para no perder columnas al resincronizar. `download_media` devuelve el motivo real cuando falla.
+- **La IA puede ver las imágenes**: `download_media` devuelve, además de la ruta, la imagen como contenido MCP (reducida con ffmpeg a 1568 px como máximo). Se puede desactivar con `show_image=False`.
