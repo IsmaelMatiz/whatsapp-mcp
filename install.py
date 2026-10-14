@@ -3,11 +3,11 @@
 
 Pasos: descarga el bridge ya compilado, ofrece instalar ffmpeg, descarga el
 modelo de transcripción, registra el servidor en Claude Desktop (y Claude Code
-si está instalado), configura el bridge para que arranque al iniciar sesión y
-vincula WhatsApp con el código QR.
+si está instalado), configura el bridge para que arranque al iniciar sesión,
+crea el acceso directo «WhatsApp MCP» y abre el dashboard, que muestra el QR.
 
-Se puede ejecutar varias veces: sirve también para actualizar y para volver a
-escanear el QR cuando WhatsApp cierra la sesión.
+Se puede ejecutar varias veces: sirve también para actualizar. El dashboard
+también usa las funciones de este archivo para manejar el bridge.
 
 Opciones:
   --yes    acepta todas las preguntas con la opción por defecto
@@ -22,7 +22,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -41,6 +40,9 @@ SERVICE_NAME = "whatsapp-bridge"
 LAUNCHD_LABEL = "com.whatsapp-mcp.bridge"
 SYSTEMD_UNIT = Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
 LAUNCHD_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+
+DASHBOARD = SERVER_DIR / "dashboard.py"
+APP_NAME = "WhatsApp MCP"
 
 MODEL_SIZES = {"tiny": "75 MB", "base": "145 MB", "small": "460 MB", "medium": "1,5 GB", "large-v3": "3 GB"}
 
@@ -86,25 +88,70 @@ def bridge_running():
         return False
 
 
-def stop_bridge():
-    """Detiene el bridge si está corriendo, para poder actualizarlo y vincularlo."""
+def wait_for_bridge(running, seconds=10):
+    for _ in range(seconds * 2):
+        if bridge_running() == running:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def autostart_configured():
+    if SYSTEM == "Windows":
+        return startup_vbs().exists()
+    if SYSTEM == "Darwin":
+        return LAUNCHD_PLIST.exists()
+    return SYSTEMD_UNIT.exists()
+
+
+def stop_bridge(interactive=True):
+    """Detiene el bridge si está corriendo. Devuelve False si no se pudo
+    (por ejemplo, si alguien lo abrió a mano en una terminal)."""
     if not bridge_running():
-        ok("El bridge no está corriendo")
-        return
-    if SYSTEM == "Linux" and shutil.which("systemctl"):
+        return True
+    if SYSTEM == "Linux" and SYSTEMD_UNIT.exists():
         run(["systemctl", "--user", "stop", SERVICE_NAME], stderr=subprocess.DEVNULL)
     elif SYSTEM == "Darwin" and LAUNCHD_PLIST.exists():
         run(["launchctl", "unload", str(LAUNCHD_PLIST)], stderr=subprocess.DEVNULL)
     elif SYSTEM == "Windows":
         run(["taskkill", "/IM", BRIDGE_BIN.name, "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(10):
-        if not bridge_running():
-            ok("Bridge detenido")
-            return
-        time.sleep(0.5)
+    else:
+        run(["pkill", "-f", str(BRIDGE_BIN)], stderr=subprocess.DEVNULL)
+    if wait_for_bridge(False, 5):
+        return True
+    if not interactive:
+        return False
     while bridge_running():
         input("  El bridge está abierto en otra ventana. Ciérralo (Ctrl+C en esa ventana) y presiona Enter... ")
-    ok("Bridge detenido")
+    return True
+
+
+def spawn_detached(cmd, cwd):
+    """Arranca un proceso que sigue vivo aunque se cierre quien lo lanzó, sin ventana."""
+    kwargs = {"cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if SYSTEM == "Windows":
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                                   | subprocess.CREATE_NO_WINDOW)
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, **kwargs)
+
+
+def start_bridge():
+    """Arranca el bridge en segundo plano, con el servicio de inicio de sesión si
+    está configurado. Devuelve True cuando ya responde."""
+    if bridge_running():
+        return True
+    if not BRIDGE_BIN.exists():
+        return False
+    if SYSTEM == "Linux" and SYSTEMD_UNIT.exists():
+        run(["systemctl", "--user", "restart", SERVICE_NAME], stderr=subprocess.DEVNULL)
+    elif SYSTEM == "Darwin" and LAUNCHD_PLIST.exists():
+        run(["launchctl", "unload", str(LAUNCHD_PLIST)], stderr=subprocess.DEVNULL)
+        run(["launchctl", "load", "-w", str(LAUNCHD_PLIST)], stderr=subprocess.DEVNULL)
+    else:
+        spawn_detached([str(BRIDGE_BIN)], BRIDGE_DIR)
+    return wait_for_bridge(True, 15)
 
 
 def asset_name():
@@ -269,11 +316,23 @@ def configure_claude_code(entry):
 
 # --- Arranque automático ----------------------------------------------------
 
+def remove_autostart():
+    if SYSTEM == "Windows":
+        startup_vbs().unlink(missing_ok=True)
+    elif SYSTEM == "Darwin":
+        run(["launchctl", "unload", "-w", str(LAUNCHD_PLIST)], stderr=subprocess.DEVNULL)
+        LAUNCHD_PLIST.unlink(missing_ok=True)
+    elif SYSTEMD_UNIT.exists():
+        run(["systemctl", "--user", "disable", SERVICE_NAME], stderr=subprocess.DEVNULL)
+        SYSTEMD_UNIT.unlink()
+        run(["systemctl", "--user", "daemon-reload"])
+
+
 def setup_autostart():
-    """Registra el bridge para que arranque al iniciar sesión. Devuelve la
-    función que lo arranca ahora mismo, o None si no se configuró."""
+    """Registra el bridge para que arranque al iniciar sesión."""
     if not ask("¿Arrancar el bridge solo cada vez que inicies sesión? (recomendado)"):
-        return None
+        remove_autostart()
+        return
     if SYSTEM == "Windows":
         vbs = startup_vbs()
         vbs.write_text(
@@ -283,7 +342,6 @@ def setup_autostart():
             encoding="utf-8",
         )
         ok(f"Agregado al inicio de Windows ({vbs.name})")
-        return lambda: subprocess.Popen(["wscript.exe", str(vbs)])
     if SYSTEM == "Darwin":
         LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
         with open(LAUNCHD_PLIST, "wb") as f:
@@ -295,7 +353,6 @@ def setup_autostart():
                 "KeepAlive": {"SuccessfulExit": False},
             }, f)
         ok("Agregado a los servicios de inicio de sesión (launchd)")
-        return lambda: run(["launchctl", "load", "-w", str(LAUNCHD_PLIST)])
     if shutil.which("systemctl"):
         SYSTEMD_UNIT.parent.mkdir(parents=True, exist_ok=True)
         SYSTEMD_UNIT.write_text(
@@ -314,66 +371,70 @@ def setup_autostart():
         run(["systemctl", "--user", "daemon-reload"])
         run(["systemctl", "--user", "enable", SERVICE_NAME], stderr=subprocess.DEVNULL)
         ok(f"Servicio de usuario creado ({SYSTEMD_UNIT})")
-        return lambda: run(["systemctl", "--user", "start", SERVICE_NAME])
-    warn("No sé configurar el arranque automático en este sistema; arranca el bridge a mano.")
-    return None
+        return
+    warn("No sé configurar el arranque automático en este sistema; el dashboard lo arrancará al abrirlo.")
 
 
-# --- Vinculación ------------------------------------------------------------
+# --- Acceso directo y dashboard --------------------------------------------
 
-def pair_and_start(start_service):
-    """Arranca el bridge en esta ventana para mostrar el QR. Cuando conecta,
-    lo pasa a segundo plano si hay arranque automático."""
-    print("  Si aparece un código QR, escanéalo desde el teléfono:")
-    print("  WhatsApp > Dispositivos vinculados > Vincular un dispositivo.\n")
-    proc = subprocess.Popen([str(BRIDGE_BIN)], cwd=BRIDGE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    connected = threading.Event()
-    showed_qr = threading.Event()
+def venv_python(windowless=False):
+    """Python del entorno del servidor (pythonw en Windows para no abrir consola)."""
+    if SYSTEM == "Windows":
+        return SERVER_DIR / ".venv" / "Scripts" / ("pythonw.exe" if windowless else "python.exe")
+    return SERVER_DIR / ".venv" / "bin" / "python"
 
-    def relay():
-        for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace")
-            sys.stdout.write("  " + line)
-            sys.stdout.flush()
-            if "Scan this QR code" in line:
-                showed_qr.set()
-            if "Connected to WhatsApp" in line:
-                connected.set()
 
-    threading.Thread(target=relay, daemon=True).start()
-    try:
-        while proc.poll() is None and not connected.wait(1):
-            pass
-    except KeyboardInterrupt:
-        proc.terminate()
-        warn("Vinculación cancelada.")
-        return False
-    if not connected.is_set():
-        warn("El bridge no pudo conectarse. Vuelve a ejecutar el instalador para intentarlo de nuevo.")
-        return False
+def create_shortcuts():
+    """Acceso directo «WhatsApp MCP» que arranca el bridge y abre el dashboard."""
+    python = venv_python(windowless=True)
+    if SYSTEM == "Windows":
+        start_menu = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        desktop = Path(os.environ["USERPROFILE"]) / "Desktop"
+        for folder in (start_menu, desktop):
+            if not folder.is_dir():
+                continue
+            lnk = folder / f"{APP_NAME}.lnk"
+            script = (
+                "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); "
+                "$s.TargetPath = $env:TARGET; $s.Arguments = $env:ARGS; "
+                "$s.WorkingDirectory = $env:WORKDIR; $s.Description = 'Dashboard de WhatsApp MCP'; $s.Save()"
+            )
+            env = {**os.environ, "LNK": str(lnk), "TARGET": str(python),
+                   "ARGS": f'"{DASHBOARD}"', "WORKDIR": str(SERVER_DIR)}
+            if run(["powershell", "-NoProfile", "-Command", script], env=env):
+                ok(f"Acceso directo creado ({lnk})")
+    elif SYSTEM == "Darwin":
+        app = Path.home() / "Applications" / f"{APP_NAME}.app"
+        macos = app / "Contents" / "MacOS"
+        macos.mkdir(parents=True, exist_ok=True)
+        launcher = macos / "launcher"
+        launcher.write_text(f'#!/bin/sh\ncd "{SERVER_DIR}"\nexec "{python}" "{DASHBOARD}"\n', encoding="utf-8")
+        launcher.chmod(0o755)
+        with open(app / "Contents" / "Info.plist", "wb") as f:
+            plistlib.dump({"CFBundleName": APP_NAME, "CFBundleExecutable": "launcher",
+                           "CFBundleIdentifier": "com.whatsapp-mcp.dashboard", "CFBundlePackageType": "APPL"}, f)
+        ok(f"App creada ({app})")
+    else:
+        apps = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "applications"
+        apps.mkdir(parents=True, exist_ok=True)
+        desktop_file = apps / "whatsapp-mcp.desktop"
+        desktop_file.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={APP_NAME}\n"
+            "Comment=Dashboard de WhatsApp MCP\n"
+            f'Exec="{python}" "{DASHBOARD}"\n'
+            f"Path={SERVER_DIR}\n"
+            "Icon=internet-chat\n"
+            "Terminal=false\n"
+            "Categories=Network;Chat;\n",
+            encoding="utf-8",
+        )
+        ok(f"Agregado al menú de aplicaciones ({desktop_file})")
 
-    if not start_service:
-        print("\n  Deja esta ventana abierta mientras uses WhatsApp con Claude (Ctrl+C para cerrar).")
-        try:
-            proc.wait()
-        except KeyboardInterrupt:
-            proc.terminate()
-        return True
 
-    if showed_qr.is_set():
-        print("\n  Sincronizando tus chats durante un minuto antes de pasar a segundo plano...")
-        try:
-            time.sleep(60)
-        except KeyboardInterrupt:
-            pass
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    start_service()
-    ok("El bridge quedó corriendo en segundo plano")
-    return True
+def open_dashboard():
+    spawn_detached([str(venv_python(windowless=True)), str(DASHBOARD)], SERVER_DIR)
 
 
 def main():
@@ -383,7 +444,9 @@ def main():
     total = 6
 
     step(1, total, "Bridge de WhatsApp")
-    stop_bridge()
+    if bridge_running():
+        stop_bridge()
+        ok("Bridge detenido para actualizarlo")
     if not install_bridge():
         sys.exit(1)
 
@@ -399,14 +462,21 @@ def main():
     configure_claude_code(entry)
 
     step(5, total, "Arranque automático")
-    start_service = setup_autostart()
+    setup_autostart()
 
-    step(6, total, "Vincular WhatsApp")
-    paired = pair_and_start(start_service)
+    step(6, total, "Acceso directo y dashboard")
+    create_shortcuts()
+    if start_bridge():
+        ok("Bridge corriendo en segundo plano")
+    else:
+        warn("El bridge no arrancó; el dashboard te dirá qué pasa.")
+    open_dashboard()
+    ok("Dashboard abierto")
 
-    print("\n\033[1mListo.\033[0m" if paired else "\n\033[1mInstalación terminada, falta vincular WhatsApp.\033[0m")
-    print("  Cierra Claude Desktop por completo (también desde la bandeja del sistema) y vuelve a abrirlo.")
-    print("  Si WhatsApp cierra la sesión (pasa cada pocas semanas), vuelve a ejecutar este instalador.")
+    print("\n\033[1mListo.\033[0m")
+    print("  1. Escanea el código QR que aparece en el dashboard (WhatsApp > Dispositivos vinculados).")
+    print("  2. Cierra Claude Desktop por completo (también desde la bandeja del sistema) y vuelve a abrirlo.")
+    print(f"  Para volver al dashboard, abre «{APP_NAME}» desde el menú de inicio o el escritorio.")
 
 
 if __name__ == "__main__":

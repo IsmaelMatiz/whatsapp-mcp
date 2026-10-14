@@ -79,49 +79,150 @@ class MessageContext:
     before: List[Message]
     after: List[Message]
 
+WHATSAPP_DB_PATH = os.path.join(os.path.dirname(MESSAGES_DB_PATH), 'whatsapp.db')
+CONTACT_NAMES_TABLE = "CREATE TABLE IF NOT EXISTS contact_names (jid TEXT PRIMARY KEY, name TEXT NOT NULL)"
+# messages.sender holds only the user part of the JID, so names are looked up under both servers
+SENDER_SERVERS = ("s.whatsapp.net", "lid")
+
+def _sender_jids(sender_jid: str) -> List[str]:
+    user = sender_jid.split('@')[0]
+    return [sender_jid] + [f"{user}@{server}" for server in SENDER_SERVERS]
+
+def whatsapp_profile_name(sender_jid: str) -> Optional[str]:
+    """Name WhatsApp knows for a contact (address book, profile or business name),
+    read from the bridge's session database."""
+    jids = _sender_jids(sender_jid)
+    try:
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        try:
+            row = conn.execute(f"""
+                SELECT COALESCE(NULLIF(full_name, ''), NULLIF(push_name, ''), NULLIF(business_name, ''))
+                FROM whatsmeow_contacts
+                WHERE their_jid IN ({','.join('?' * len(jids))})
+                ORDER BY full_name != '' DESC
+                LIMIT 1
+            """, jids).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
+
 def get_sender_name(sender_jid: str) -> str:
+    """Display name for a sender: a name assigned with set_contact_name, then the
+    chat name, then the name WhatsApp knows, then the JID itself."""
+    user = sender_jid.split('@')[0]
+    jids = _sender_jids(sender_jid)
+    placeholders = ','.join('?' * len(jids))
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
-        cursor = conn.cursor()
-        
-        # First try matching by exact JID
-        cursor.execute("""
-            SELECT name
-            FROM chats
-            WHERE jid = ?
-            LIMIT 1
-        """, (sender_jid,))
-        
-        result = cursor.fetchone()
-        
-        # If no result, try looking for the number within JIDs
-        if not result:
-            # Extract the phone number part if it's a JID
-            if '@' in sender_jid:
-                phone_part = sender_jid.split('@')[0]
-            else:
-                phone_part = sender_jid
-                
-            cursor.execute("""
-                SELECT name
-                FROM chats
-                WHERE jid LIKE ?
-                LIMIT 1
-            """, (f"%{phone_part}%",))
-            
-            result = cursor.fetchone()
-        
-        if result and result[0]:
-            return result[0]
-        else:
-            return sender_jid
-        
+        try:
+            conn.execute(CONTACT_NAMES_TABLE)
+            row = conn.execute(f"SELECT name FROM contact_names WHERE jid IN ({placeholders}) LIMIT 1", jids).fetchone()
+            if not row:
+                row = conn.execute(f"SELECT name FROM chats WHERE jid IN ({placeholders}) AND name != ? LIMIT 1",
+                                   (*jids, user)).fetchone()
+            if not row:
+                # Older rows may store the JID in another form
+                row = conn.execute("SELECT name FROM chats WHERE jid LIKE ? AND name != ? LIMIT 1",
+                                   (f"%{user}%", user)).fetchone()
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         print(f"Database error while getting sender name: {e}")
-        return sender_jid
+        row = None
+    if row and row[0]:
+        return row[0]
+    return whatsapp_profile_name(sender_jid) or sender_jid
+
+def normalize_contact_jid(jid_or_phone: str) -> str:
+    """Accept a JID or a phone number (with or without +, spaces or dashes)."""
+    jid_or_phone = jid_or_phone.strip()
+    if '@' in jid_or_phone:
+        return jid_or_phone
+    return ''.join(ch for ch in jid_or_phone if ch.isdigit()) + "@s.whatsapp.net"
+
+def set_contact_name(jid_or_phone: str, name: str) -> Tuple[bool, str]:
+    """Save a name for a contact, used everywhere instead of the bare number.
+    An empty name removes it."""
+    jid = normalize_contact_jid(jid_or_phone)
+    user = jid.split('@')[0]
+    if not user:
+        return False, "Invalid contact"
+    if jid.endswith("@g.us"):
+        return False, "Groups already have a name; this is only for contacts"
+    name = name.strip()
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        conn.execute(CONTACT_NAMES_TABLE)
+        if name:
+            conn.execute("INSERT INTO contact_names (jid, name) VALUES (?, ?) "
+                         "ON CONFLICT(jid) DO UPDATE SET name = excluded.name", (jid, name))
+        else:
+            conn.execute("DELETE FROM contact_names WHERE jid = ?", (jid,))
+        # The chat shows the new name right away; with no name, the bridge looks it up again
+        conn.execute("UPDATE chats SET name = ? WHERE jid = ?",
+                     (name or whatsapp_profile_name(jid) or user, jid))
+        conn.commit()
     finally:
-        if 'conn' in locals():
+        conn.close()
+    return True, f"Name for {jid} set to {name}" if name else f"Name for {jid} removed"
+
+def list_contact_names() -> List[dict]:
+    """Contacts with a name assigned with set_contact_name."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        conn.execute(CONTACT_NAMES_TABLE)
+        rows = conn.execute("SELECT jid, name FROM contact_names ORDER BY name COLLATE NOCASE").fetchall()
+    finally:
+        conn.close()
+    return [{"jid": jid, "phone": jid.split('@')[0], "name": name} for jid, name in rows]
+
+def _known_lids() -> set:
+    """User parts of the hidden-number (LID) contacts the bridge's session knows."""
+    try:
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT their_jid FROM whatsmeow_contacts WHERE their_jid LIKE '%@lid'").fetchall()
+            rows += conn.execute("SELECT lid || '@lid' FROM whatsmeow_lid_map").fetchall()
+        finally:
             conn.close()
+    except sqlite3.Error:
+        return set()
+    return {jid.split('@')[0] for (jid,) in rows}
+
+def list_unnamed_contacts() -> List[dict]:
+    """Contacts shown only by their number: direct chats without a real name and
+    group members with no chat of their own, most recent first."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        conn.execute(CONTACT_NAMES_TABLE)
+        chats = conn.execute("""
+            SELECT jid, last_message_time FROM chats
+            WHERE jid NOT LIKE '%@g.us' AND jid NOT LIKE '%@broadcast' AND jid NOT LIKE '%@newsletter'
+              AND (name IS NULL OR name = '' OR name = substr(jid, 1, instr(jid, '@') - 1))
+              AND jid NOT IN (SELECT jid FROM contact_names)
+        """).fetchall()
+        senders = conn.execute("""
+            SELECT m.sender, MAX(m.timestamp), COUNT(DISTINCT m.chat_jid) FROM messages m
+            WHERE m.chat_jid LIKE '%@g.us' AND m.is_from_me = 0 AND m.sender != ''
+              AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.jid IN (m.sender || '@s.whatsapp.net', m.sender || '@lid'))
+              AND NOT EXISTS (SELECT 1 FROM contact_names n WHERE n.jid IN (m.sender || '@s.whatsapp.net', m.sender || '@lid'))
+            GROUP BY m.sender
+        """).fetchall()
+    finally:
+        conn.close()
+    result = [{"jid": jid, "last_seen": last, "source": "chat"} for jid, last in chats]
+    lids = _known_lids()
+    for user, last, groups in senders:
+        server = "lid" if user in lids else "s.whatsapp.net"
+        result.append({"jid": f"{user}@{server}", "last_seen": last, "source": "group", "groups": groups})
+    for contact in result:
+        contact["phone"] = contact["jid"].split('@')[0]
+        contact["hidden_number"] = contact["jid"].endswith("@lid")
+        contact["suggestion"] = whatsapp_profile_name(contact["jid"])
+    result.sort(key=lambda c: c["last_seen"] or "", reverse=True)
+    return result
 
 def format_message(message: Message, show_chat_info: bool = True) -> None:
     """Print a single message with consistent formatting."""

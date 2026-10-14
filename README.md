@@ -15,6 +15,8 @@ It uses the WhatsApp Web multidevice API through [whatsmeow](https://github.com/
 - **Download media** on demand. Images and stickers are returned so the AI can see them; videos and GIFs return one frame. Captions are saved as the message text.
 - **Auto-download** new media for the chats you choose, before WhatsApp's links expire.
 - **Transcribe voice notes locally** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper). The audio never leaves your computer.
+- **Name contacts** that only show up as a number, so every tool returns the name instead of the LLM having to remember it.
+- **Dashboard** to link WhatsApp with the QR code, watch the sync, open downloaded files, pick auto-download chats, name contacts and connect Claude Desktop.
 
 ### Tools
 
@@ -31,6 +33,7 @@ It uses the WhatsApp Web multidevice API through [whatsmeow](https://github.com/
 | `download_media` | Download a message's media and return its local path |
 | `transcribe_audio` | Transcribe a voice note to text |
 | `set_auto_download` / `list_auto_download_chats` | Manage per-chat automatic download |
+| `set_contact_name` | Save a name for a contact that only has a number |
 
 ## Installation
 
@@ -46,11 +49,23 @@ It uses the WhatsApp Web multidevice API through [whatsmeow](https://github.com/
    - **Windows:** double-click `setup.bat`.
    - **Linux / macOS:** run `./setup.sh` in a terminal.
 
-3. Scan the QR code with your phone (WhatsApp > Linked devices > Link a device).
+3. Scan the QR code shown in the dashboard with your phone (WhatsApp > Linked devices > Link a device).
 
-4. Quit Claude Desktop completely and open it again.
+4. Quit Claude Desktop completely (from the system tray or menu bar, not just the window) and open it again.
 
-The installer sets up [uv](https://docs.astral.sh/uv/) and Python, downloads the prebuilt bridge, offers to install FFmpeg, downloads the transcription model, adds the server to Claude Desktop (and Claude Code if installed), and starts the bridge at login. It asks before each optional step. Run it again to update, or when WhatsApp logs the session out (every few weeks).
+The installer sets up [uv](https://docs.astral.sh/uv/) and Python, downloads the prebuilt bridge, offers to install FFmpeg, downloads the transcription model, adds the server to Claude Desktop (and Claude Code if installed), starts the bridge at login, and creates a **WhatsApp MCP** shortcut. It asks before each optional step. Run it again to update.
+
+## Dashboard
+
+Open **WhatsApp MCP** from the Start menu, the desktop, the app menu or `~/Applications` (or run `uv run dashboard.py` in `whatsapp-mcp-server/`). It starts the bridge if it isn't running and shows:
+
+- **Home:** bridge and WhatsApp status, the QR code when the device needs linking (also after WhatsApp logs the session out), sync progress and the start-at-login switch.
+- **Files:** the downloaded media folder and the latest files, to open them or show them in their folder.
+- **Auto-download:** a switch per chat.
+- **Contacts:** contacts shown only by number, with the name WhatsApp knows as a suggestion.
+- **Claude Desktop:** one-click setup, a step-by-step guide and the transcription model.
+
+It opens in a native window ([pywebview](https://pywebview.flowrl.com/)); on Linux without GTK or Qt it opens as a Chromium app window or a browser tab.
 
 ### Manual install
 
@@ -110,8 +125,9 @@ Media is saved in `whatsapp-bridge/store/<chat JID>/`, named after the message I
 
 ## Troubleshooting
 
-- **Is the bridge running?** It runs in the background after the quick install: `whatsapp-bridge.exe` in the Task Manager on Windows, `systemctl --user status whatsapp-bridge` on Linux. Run the installer again to restart it.
-- **No QR code:** restart the bridge and check that your terminal can display it. If a session is active, it reconnects without one.
+- **Is the bridge running?** The dashboard shows it and can start or restart it.
+- **No QR code:** open the dashboard; it shows the code whenever the device needs linking. If a session is active, the bridge reconnects without one.
+- **Windows, Microsoft Store version of Claude:** its *Edit Config* button opens a file the app ignores. Use the installer or the dashboard's *Connect automatically*, which write to the file the app reads.
 - **Device limit reached:** remove a linked device from WhatsApp on your phone.
 - **No messages yet:** the first history sync can take several minutes.
 - **Out of sync:** delete `whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`, then restart the bridge and scan again.

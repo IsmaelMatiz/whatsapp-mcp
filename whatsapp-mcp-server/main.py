@@ -16,7 +16,8 @@ from whatsapp import (
     image_preview,
     transcribe_audio as whatsapp_transcribe_audio,
     set_auto_download as whatsapp_set_auto_download,
-    list_auto_download_chats as whatsapp_list_auto_download_chats
+    list_auto_download_chats as whatsapp_list_auto_download_chats,
+    set_contact_name as whatsapp_set_contact_name
 )
 
 # Downloaded files with these extensions are returned as images by download_media
@@ -319,6 +320,24 @@ def set_auto_download(chat_jid: str, enabled: bool = True) -> Dict[str, Any]:
 def list_auto_download_chats() -> List[Dict[str, Any]]:
     """List the WhatsApp chats whose incoming media is downloaded automatically."""
     return whatsapp_list_auto_download_chats()
+
+@mcp.tool()
+def set_contact_name(contact: str, name: str) -> Dict[str, Any]:
+    """Save a name for a WhatsApp contact that only shows up as a phone number.
+    
+    The name is stored locally and used from then on in chats, messages and group
+    senders, so it doesn't have to be remembered. Use it when the user says who a
+    number belongs to.
+    
+    Args:
+        contact: The contact's phone number with country code (e.g. "573001234567") or JID
+        name: The name to show; an empty string removes the saved name
+    
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_set_contact_name(contact, name)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server
